@@ -1,0 +1,132 @@
+@startuml
+
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 14
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+skinparam ParticipantPadding 14
+skinparam maxMessageSize 310
+skinparam sequence {
+ ArrowColor #25415D
+ LifeLineBorderColor #9FAEBF
+ ParticipantBackgroundColor #EDF3FA
+ ParticipantBorderColor #25415D
+ GroupBackgroundColor #FAFBFD
+ GroupBorderColor #9FAEBF
+}
+hide footbox
+autonumber
+
+title СМО, вариант 5 – вытеснение ожидающего участника пакета
+participant "Движок\nSimulationEngine" as E
+participant "Календарь\nEventCalendar" as C
+participant "Источник\nSource" as S
+participant "Диспетчер постановки\nInsertionDispatcher" as I
+participant "Кольцевой буфер\nCircularBuffer" as B
+participant "Диспетчер выбора\nSelectionDispatcher" as D
+participant "Текущий пакет\nProcessingPackage" as P
+participant "Пул серверов\nServerPool" as F
+participant "Выбранный сервер\nComputingServer" as V
+participant "Статистика\nStatisticsCollector" as T
+note over E,T
+Пакет содержит А, Б и других участников; состав фиксирован.
+Пять серверов заняты его участниками; А завершится последней.
+Б – единственная WAITING-заявка пакета, в буфере под p.
+Буфер заполнен. Приходит новая заявка r.
+end note
+E -> S: generate(t): Request
+S --> E: r(sourceId, sequenceNo, arrivedAt=t)
+note over S
+ИБ: бесконечный логический источник.
+ИЗ1: интервалы поступлений ~ Exp(lambda).
+end note
+E -> T: recordArrival(r, t)
+T --> E: поступление учтено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "GENERATED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> I: accept(r): InsertionResult
+I -> B: insert(r): InsertionResult
+B -> B: искать свободную ячейку по кругу от p
+alt свободная ячейка j найдена (Д1ОЗ1)
+ B -> B: slots[j] = r; p = (j + 1) mod capacity
+else буфер заполнен (Д1ОО1)
+ B -> B: evicted = slots[p]; j = p
+ B -> B: slots[j] = r; p = (j + 1) mod capacity
+end
+B --> I: result(r, j, oldPointer, newPointer, evicted?)
+I --> E: result
+opt evicted существует
+ E -> D: onEvicted(evicted.id)
+    opt activePackage != null и evicted.id входит в activePackage
+  D -> P: markRefused(evicted.id)
+  P --> D: REFUSED; состав не изменён
+ end
+ D --> E: уведомление обработано
+end
+E -> T: recordInsertion(result, t)
+T --> E: запись и отказ вытесненной заявки учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "INSERTED_OR_EVICTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> S: nextArrivalAt(t): Time
+S --> E: tNext = t + Exp(lambda)
+E -> C: scheduleArrival(sourceId, tNext)
+C --> E: событие добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "ARRIVAL_SCHEDULED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> D: assignNext(t)
+D -> P: isTerminal()
+P --> D: false; есть RUNNING
+D -> F: lowestFree()
+F --> D: null
+D --> E: null
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "DISPATCH_FINISHED", snapshot)
+T --> E: состояние сохранено (ОД2)
+note over B,P
+Вытесненная Б имеет REFUSED и остаётся в frozenIds.
+Новая r не входит в активный пакет.
+end note
+... четыре участника завершаются раньше А ...
+ref over E,T
+Для каждого завершения: finish → onCompleted → markServed,
+recordCompletion и recordState. Назначений нет: WAITING отсутствуют.
+end ref
+E -> C: popNextBatch()
+C --> E: завершение А в момент tLast
+E -> E: modelTime = tLast; t = tLast
+E -> V: finish(t): CompletionResult
+V --> E: result(assignment, completedAt=t); сервер свободен
+E -> D: onCompleted(result)
+D -> P: markServed(result.assignment.request.id)
+P --> D: RUNNING → SERVED
+D --> E: состояние пакета обновлено
+E -> T: recordCompletion(result, t)
+T --> E: завершение и время пребывания учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "COMPLETED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> D: assignNext(t)
+D -> P: isTerminal()
+P --> D: true; все участники SERVED или REFUSED
+D -> P: close()
+P --> D: пакет закрыт
+D -> D: activePackage = null
+ref over D,V
+Выбрать следующий пакет и свободный сервер по selection.puml.
+start вызывается на выбранном ComputingServer.
+end ref
+D --> E: assignment / null
+opt assignment существует
+ E -> T: recordStart(assignment, t)
+ T --> E: начало учтено
+ E -> C: scheduleCompletion(assignment)
+ C --> E: завершение добавлено
+end
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "DISPATCH_RESULT", snapshot)
+T --> E: состояние сохранено (ОД2)
+
+@enduml

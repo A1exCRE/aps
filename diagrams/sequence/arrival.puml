@@ -1,0 +1,81 @@
+@startuml
+
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 14
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+skinparam ParticipantPadding 14
+skinparam maxMessageSize 310
+skinparam sequence {
+ ArrowColor #25415D
+ LifeLineBorderColor #9FAEBF
+ ParticipantBackgroundColor #EDF3FA
+ ParticipantBorderColor #25415D
+ GroupBackgroundColor #FAFBFD
+ GroupBorderColor #9FAEBF
+}
+hide footbox
+autonumber
+
+title СМО, вариант 5 – поступление и переполнение буфера
+participant "Движок\nSimulationEngine" as E
+participant "Календарь\nEventCalendar" as C
+participant "Источник\nSource" as S
+participant "Диспетчер постановки\nInsertionDispatcher" as I
+participant "Кольцевой буфер\nCircularBuffer" as B
+participant "Диспетчер выбора\nSelectionDispatcher" as D
+participant "Текущий пакет\nProcessingPackage" as P
+participant "Статистика\nStatisticsCollector" as T
+note over E,T
+Триггер: календарь выдал поступление источника в момент t.
+Все завершения обслуживания данного t уже обработаны.
+Отказ возможен только при вытеснении из полного буфера.
+end note
+E -> S: generate(t): Request
+S --> E: r(sourceId, sequenceNo, arrivedAt=t)
+note over S
+ИБ: бесконечный логический источник.
+ИЗ1: интервалы поступлений ~ Exp(lambda).
+end note
+E -> T: recordArrival(r, t)
+T --> E: поступление учтено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "GENERATED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> I: accept(r): InsertionResult
+I -> B: insert(r): InsertionResult
+B -> B: искать свободную ячейку по кругу от p
+alt свободная ячейка j найдена (Д1ОЗ1)
+ B -> B: slots[j] = r; p = (j + 1) mod capacity
+else буфер заполнен (Д1ОО1)
+ B -> B: evicted = slots[p]; j = p
+ B -> B: slots[j] = r; p = (j + 1) mod capacity
+end
+B --> I: result(r, j, oldPointer, newPointer, evicted?)
+I --> E: result
+opt evicted существует
+ E -> D: onEvicted(evicted.id)
+    opt activePackage != null и evicted.id входит в activePackage
+  D -> P: markRefused(evicted.id)
+  P --> D: REFUSED; состав не изменён
+ end
+ D --> E: уведомление обработано
+end
+E -> T: recordInsertion(result, t)
+T --> E: запись и отказ вытесненной заявки учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "INSERTED_OR_EVICTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> S: nextArrivalAt(t): Time
+S --> E: tNext = t + Exp(lambda)
+E -> C: scheduleArrival(sourceId, tNext)
+C --> E: событие добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "ARRIVAL_SCHEDULED", snapshot)
+T --> E: состояние сохранено (ОД2)
+ref over E,D
+После всех поступлений данного t:
+назначения по selection.puml
+end ref
+
+@enduml

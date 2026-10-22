@@ -1,0 +1,183 @@
+@startuml
+
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 14
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+skinparam ParticipantPadding 14
+skinparam maxMessageSize 310
+skinparam sequence {
+ ArrowColor #25415D
+ LifeLineBorderColor #9FAEBF
+ ParticipantBackgroundColor #EDF3FA
+ ParticipantBorderColor #25415D
+ GroupBackgroundColor #FAFBFD
+ GroupBorderColor #9FAEBF
+}
+hide footbox
+autonumber
+
+title СМО, вариант 5 – общая последовательность\nИБ ИЗ1 ПЗ2 Д1ОЗ1 Д1ОО1 Д2П1 Д2Б5 ОР1 ОД2
+participant "Движок\nSimulationEngine" as E
+participant "Календарь\nEventCalendar" as C
+participant "Источник\nSource" as S
+participant "Диспетчер постановки\nInsertionDispatcher" as I
+participant "Кольцевой буфер\nCircularBuffer" as B
+participant "Диспетчер выбора\nSelectionDispatcher" as D
+participant "Текущий пакет\nProcessingPackage" as P
+participant "Пул серверов\nServerPool" as F
+participant "Выбранный сервер\nComputingServer" as V
+participant "Статистика\nStatisticsCollector" as T
+note over E,T
+Все заявки проходят через буфер. Буфер содержит только ожидающие заявки.
+Пакет неизменяем по составу; RUNNING-заявки находятся на серверах, вне буфера.
+end note
+loop для каждого источника
+ E -> S: nextArrivalAt(t0): Time
+ S --> E: tFirst = t0 + Exp(lambda)
+ E -> C: scheduleArrival(sourceId, tFirst)
+ C --> E: событие добавлено
+end
+loop до заданного условия остановки
+ E -> C: popNextBatch(): EventBatch
+ C --> E: batch(t, completions, arrivals)
+ E -> E: modelTime = batch.t
+ group Завершения данного t, по номеру сервера
+ loop для каждого completion
+E -> V: finish(t): CompletionResult
+V --> E: result(assignment, completedAt=t); сервер свободен
+E -> D: onCompleted(result)
+D -> P: markServed(result.assignment.request.id)
+P --> D: RUNNING → SERVED
+D --> E: состояние пакета обновлено
+E -> T: recordCompletion(result, t)
+T --> E: завершение и время пребывания учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "COMPLETED", snapshot)
+T --> E: состояние сохранено (ОД2)
+end
+ end
+ group Поступления данного t, по номеру источника и sequenceNo
+ loop для каждого arrival
+E -> S: generate(t): Request
+S --> E: r(sourceId, sequenceNo, arrivedAt=t)
+note over S
+ИБ: бесконечный логический источник.
+ИЗ1: интервалы поступлений ~ Exp(lambda).
+end note
+E -> T: recordArrival(r, t)
+T --> E: поступление учтено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "GENERATED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> I: accept(r): InsertionResult
+I -> B: insert(r): InsertionResult
+B -> B: искать свободную ячейку по кругу от p
+alt свободная ячейка j найдена (Д1ОЗ1)
+ B -> B: slots[j] = r; p = (j + 1) mod capacity
+else буфер заполнен (Д1ОО1)
+ B -> B: evicted = slots[p]; j = p
+ B -> B: slots[j] = r; p = (j + 1) mod capacity
+end
+B --> I: result(r, j, oldPointer, newPointer, evicted?)
+I --> E: result
+opt evicted существует
+ E -> D: onEvicted(evicted.id)
+    opt activePackage != null и evicted.id входит в activePackage
+  D -> P: markRefused(evicted.id)
+  P --> D: REFUSED; состав не изменён
+ end
+ D --> E: уведомление обработано
+end
+E -> T: recordInsertion(result, t)
+T --> E: запись и отказ вытесненной заявки учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "INSERTED_OR_EVICTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> S: nextArrivalAt(t): Time
+S --> E: tNext = t + Exp(lambda)
+E -> C: scheduleArrival(sourceId, tNext)
+C --> E: событие добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "ARRIVAL_SCHEDULED", snapshot)
+T --> E: состояние сохранено (ОД2)
+end
+ end
+ group Назначения после всех завершений и поступлений данного t
+E -> E: continueAssignments = true
+loop continueAssignments == true
+E -> D: assignNext(t): Assignment?
+opt activePackage существует
+ D -> P: isTerminal(): bool
+ P --> D: terminal = все участники SERVED или REFUSED
+ opt terminal == true
+  D -> P: close()
+  P --> D: пакет закрыт
+  D -> D: activePackage = null
+ end
+end
+D -> F: lowestFree(): ComputingServer?
+F --> D: server с минимальным номером / null (Д2П1)
+alt server == null
+ D --> E: null
+else свободный сервер найден
+ opt activePackage == null
+  D -> B: highestPrioritySource(): SourceId?
+  B --> D: вуз, иначе школа, иначе колледж / null
+  opt sourceId существует
+   D -> B: waitingIds(sourceId): List<RequestId>
+   B --> D: все ожидающие заявки источника, FIFO
+   D -> D: packageId = nextPackageId; nextPackageId += 1
+   D -> P: <<create>> ProcessingPackage(packageId, frozenIds)
+   P --> D: фиксированный состав; состояния WAITING (Д2Б5)
+  end
+ end
+ alt activePackage отсутствует
+  D --> E: null
+ else пакет существует
+  D -> P: nextWaiting(): RequestId?
+  P --> D: первый WAITING / null; RUNNING, SERVED, REFUSED пропускаются
+  alt id == null
+   D --> E: null
+   note over D,V
+   При наличии RUNNING пакет остаётся активным.
+   Свободные серверы ждут; другой пакет не выбирается.
+   end note
+  else есть ожидающий участник
+   D -> B: remove(id): Request
+   B --> D: r; ячейка свободна; p не меняется
+   D -> V: start(r, activePackage.id, t): Assignment
+   V --> D: assignment(request, server, packageId, t, endAt)
+   note right of V
+   V = server, возвращённый lowestFree().
+   ПЗ2: endAt = t + Uniform(a, b).
+   end note
+   D -> P: markRunning(id, server.number)
+   P --> D: WAITING → RUNNING
+   D --> E: assignment
+  end
+ end
+end
+alt assignment существует
+ E -> T: recordStart(assignment, t)
+ T --> E: начало обслуживания и ожидание учтены
+ E -> C: scheduleCompletion(assignment)
+ C --> E: завершение на assignment.endAt добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "STARTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+else assignment == null
+ E -> E: continueAssignments = false
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "DISPATCH_FINISHED", snapshot)
+T --> E: состояние сохранено (ОД2)
+
+end
+end
+note over E,D: переход к следующему календарному времени
+end
+end
+E -> T: summary(): SummaryTable
+T --> E: ОР1: сводная таблица по источникам и серверам
+
+@enduml

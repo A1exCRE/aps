@@ -1,0 +1,123 @@
+@startuml
+
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 14
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+skinparam ParticipantPadding 14
+skinparam maxMessageSize 310
+skinparam sequence {
+ ArrowColor #25415D
+ LifeLineBorderColor #9FAEBF
+ ParticipantBackgroundColor #EDF3FA
+ ParticipantBorderColor #25415D
+ GroupBackgroundColor #FAFBFD
+ GroupBorderColor #9FAEBF
+}
+hide footbox
+autonumber
+
+title СМО, вариант 5 – обслуживание без отказа\nБуфер свободен, серверы свободны, активного пакета нет
+participant "Движок\nSimulationEngine" as E
+participant "Календарь\nEventCalendar" as C
+participant "Источник\nSource" as S
+participant "Диспетчер постановки\nInsertionDispatcher" as I
+participant "Кольцевой буфер\nCircularBuffer" as B
+participant "Диспетчер выбора\nSelectionDispatcher" as D
+participant "Текущий пакет\nProcessingPackage" as P
+participant "Пул серверов\nServerPool" as F
+participant "Выбранный сервер\nComputingServer" as V
+participant "Статистика\nStatisticsCollector" as T
+E -> C: popNextBatch(): EventBatch
+C --> E: поступление источника в момент t
+E -> E: modelTime = t
+E -> S: generate(t): Request
+S --> E: r
+E -> T: recordArrival(r, t)
+T --> E: поступление учтено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "GENERATED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> I: accept(r): InsertionResult
+I -> B: insert(r): InsertionResult
+B -> B: Д1ОЗ1: найти свободную j от p; slots[j] = r
+B -> B: p = (j + 1) mod capacity
+B --> I: result(r, j, oldPointer, newPointer, evicted=null)
+I --> E: result
+E -> T: recordInsertion(result, t)
+T --> E: запись учтена; отказа нет
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "INSERTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> S: nextArrivalAt(t): Time
+S --> E: tNext = t + Exp(lambda) (ИЗ1)
+E -> C: scheduleArrival(sourceId, tNext)
+C --> E: поступление добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "ARRIVAL_SCHEDULED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> D: assignNext(t): Assignment?
+D -> F: lowestFree(): ComputingServer?
+F --> D: server с минимальным номером (Д2П1)
+D -> B: highestPrioritySource(): SourceId?
+B --> D: r.sourceId
+D -> B: waitingIds(r.sourceId): List<RequestId>
+B --> D: [r.id]
+D -> D: packageId = nextPackageId; nextPackageId += 1
+D -> P: <<create>> ProcessingPackage(packageId, [r.id])
+P --> D: фиксированный пакет (Д2Б5)
+D -> P: nextWaiting(): RequestId?
+P --> D: r.id, состояние WAITING
+D -> B: remove(r.id): Request
+B --> D: r; ячейка свободна; p не меняется
+D -> V: start(r, packageId, t): Assignment
+V --> D: assignment; endAt = t + Uniform(a,b) (ПЗ2)
+D -> P: markRunning(r.id, server.number)
+P --> D: RUNNING
+D --> E: assignment
+E -> T: recordStart(assignment, t)
+T --> E: начало учтено; ожидание равно нулю
+E -> C: scheduleCompletion(assignment)
+C --> E: завершение добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "STARTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> D: assignNext(t): Assignment?
+D -> P: isTerminal(): bool
+P --> D: false
+D -> F: lowestFree(): ComputingServer?
+F --> D: следующий свободный сервер
+D -> P: nextWaiting(): RequestId?
+P --> D: null; единственный участник RUNNING
+D --> E: null
+... переход к ближайшему событию; других поступлений до завершения нет ...
+E -> C: popNextBatch(): EventBatch
+C --> E: завершение в момент tEnd
+E -> E: modelTime = tEnd; t = tEnd
+E -> V: finish(t): CompletionResult
+V --> E: result(assignment, completedAt=t); сервер свободен
+E -> D: onCompleted(result)
+D -> P: markServed(result.assignment.request.id)
+P --> D: RUNNING → SERVED
+D --> E: состояние пакета обновлено
+E -> T: recordCompletion(result, t)
+T --> E: завершение и время пребывания учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "COMPLETED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> D: assignNext(t): Assignment?
+D -> P: isTerminal(): bool
+P --> D: true
+D -> P: close()
+P --> D: закрыт
+D -> D: activePackage = null
+D -> F: lowestFree(): ComputingServer?
+F --> D: server с минимальным номером
+D -> B: highestPrioritySource(): SourceId?
+B --> D: null; буфер пуст
+D --> E: null
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "DISPATCH_FINISHED", snapshot)
+T --> E: состояние сохранено (ОД2)
+
+@enduml

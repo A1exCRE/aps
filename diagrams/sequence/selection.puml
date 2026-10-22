@@ -1,0 +1,106 @@
+@startuml
+
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 14
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+skinparam ParticipantPadding 14
+skinparam maxMessageSize 310
+skinparam sequence {
+ ArrowColor #25415D
+ LifeLineBorderColor #9FAEBF
+ ParticipantBackgroundColor #EDF3FA
+ ParticipantBorderColor #25415D
+ GroupBackgroundColor #FAFBFD
+ GroupBorderColor #9FAEBF
+}
+hide footbox
+autonumber
+
+title СМО, вариант 5 – выбор пакета и назначение серверов
+participant "Движок\nSimulationEngine" as E
+participant "Календарь\nEventCalendar" as C
+participant "Кольцевой буфер\nCircularBuffer" as B
+participant "Диспетчер выбора\nSelectionDispatcher" as D
+participant "Текущий пакет\nProcessingPackage" as P
+participant "Пул серверов\nServerPool" as F
+participant "Выбранный сервер\nComputingServer" as V
+participant "Статистика\nStatisticsCollector" as T
+note over E,T
+Триггер: обработаны все завершения и поступления текущего t.
+highestPrioritySource() и waitingIds() вызываются только при activePackage == null.
+Новые поступления не расширяют frozenIds активного пакета.
+end note
+E -> E: continueAssignments = true
+loop continueAssignments == true
+E -> D: assignNext(t): Assignment?
+opt activePackage существует
+ D -> P: isTerminal(): bool
+ P --> D: terminal = все участники SERVED или REFUSED
+ opt terminal == true
+  D -> P: close()
+  P --> D: пакет закрыт
+  D -> D: activePackage = null
+ end
+end
+D -> F: lowestFree(): ComputingServer?
+F --> D: server с минимальным номером / null (Д2П1)
+alt server == null
+ D --> E: null
+else свободный сервер найден
+ opt activePackage == null
+  D -> B: highestPrioritySource(): SourceId?
+  B --> D: вуз, иначе школа, иначе колледж / null
+  opt sourceId существует
+   D -> B: waitingIds(sourceId): List<RequestId>
+   B --> D: все ожидающие заявки источника, FIFO
+   D -> D: packageId = nextPackageId; nextPackageId += 1
+   D -> P: <<create>> ProcessingPackage(packageId, frozenIds)
+   P --> D: фиксированный состав; состояния WAITING (Д2Б5)
+  end
+ end
+ alt activePackage отсутствует
+  D --> E: null
+ else пакет существует
+  D -> P: nextWaiting(): RequestId?
+  P --> D: первый WAITING / null; RUNNING, SERVED, REFUSED пропускаются
+  alt id == null
+   D --> E: null
+   note over D,V
+   При наличии RUNNING пакет остаётся активным.
+   Свободные серверы ждут; другой пакет не выбирается.
+   end note
+  else есть ожидающий участник
+   D -> B: remove(id): Request
+   B --> D: r; ячейка свободна; p не меняется
+   D -> V: start(r, activePackage.id, t): Assignment
+   V --> D: assignment(request, server, packageId, t, endAt)
+   note right of V
+   V = server, возвращённый lowestFree().
+   ПЗ2: endAt = t + Uniform(a, b).
+   end note
+   D -> P: markRunning(id, server.number)
+   P --> D: WAITING → RUNNING
+   D --> E: assignment
+  end
+ end
+end
+alt assignment существует
+ E -> T: recordStart(assignment, t)
+ T --> E: начало обслуживания и ожидание учтены
+ E -> C: scheduleCompletion(assignment)
+ C --> E: завершение на assignment.endAt добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "STARTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+else assignment == null
+ E -> E: continueAssignments = false
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "DISPATCH_FINISHED", snapshot)
+T --> E: состояние сохранено (ОД2)
+
+end
+end
+note over E,D: переход к следующему календарному времени
+
+@enduml

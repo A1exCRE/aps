@@ -1,0 +1,223 @@
+@startuml
+
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 14
+skinparam sequenceMessageAlign left
+skinparam responseMessageBelowArrow true
+skinparam ParticipantPadding 14
+skinparam maxMessageSize 310
+skinparam sequence {
+ ArrowColor #25415D
+ LifeLineBorderColor #9FAEBF
+ ParticipantBackgroundColor #EDF3FA
+ ParticipantBorderColor #25415D
+ GroupBackgroundColor #FAFBFD
+ GroupBorderColor #9FAEBF
+}
+hide footbox
+autonumber
+
+title СМО, вариант 5 – параллельное обслуживание одного пакета
+participant "Движок\nSimulationEngine" as E
+participant "Календарь\nEventCalendar" as C
+participant "Источник\nSource" as S
+participant "Диспетчер постановки\nInsertionDispatcher" as I
+participant "Кольцевой буфер\nCircularBuffer" as B
+participant "Диспетчер выбора\nSelectionDispatcher" as D
+participant "Текущий пакет\nProcessingPackage" as P
+participant "Пул серверов\nServerPool" as F
+participant "Сервер №1\nComputingServer" as V1
+participant "Сервер №2\nComputingServer" as V2
+participant "Статистика\nStatisticsCollector" as T
+note over E,T
+А и Б из вуза, В из школы накопились в буфере при обработке прежнего пакета.
+Триггер: завершён последний участник прежнего пакета, все серверы свободны.
+Предыдущий пакет закрывается первым вызовом assignNext(t).
+А поступила раньше Б; Г поступает из вуза во время обработки А и Б.
+При поступлении Г в буфере есть свободная ячейка.
+end note
+loop последовательно назначить А и Б
+ E -> D: assignNext(t): Assignment?
+ opt первый вызов; прежний пакет терминален
+  D -> P: isTerminal()
+  P --> D: true
+  D -> P: close()
+  P --> D: прежний пакет закрыт
+  D -> D: activePackage = null
+ end
+ D -> F: lowestFree(): ComputingServer?
+ F --> D: сначала №1, затем №2 (Д2П1)
+ opt activePackage == null
+  D -> B: highestPrioritySource()
+  B --> D: вуз
+  D -> B: waitingIds(вуз)
+  B --> D: [А.id, Б.id]
+  D -> D: packageId = nextPackageId; nextPackageId += 1
+  D -> P: <<create>> ProcessingPackage(packageId, [А.id, Б.id])
+  P --> D: фиксированный пакет; все участники WAITING (Д2Б5)
+ end
+ D -> P: nextWaiting(): RequestId?
+ P --> D: сначала А, затем Б; только WAITING
+ D -> B: remove(id): Request
+ B --> D: r; ячейка свободна; p не меняется
+ alt r.id == А.id
+  D -> V1: start(А, packageId, t): Assignment
+  V1 --> D: assignmentА; сервер №1 занят (ПЗ2)
+ else r.id == Б.id
+  D -> V2: start(Б, packageId, t): Assignment
+  V2 --> D: assignmentБ; сервер №2 занят (ПЗ2)
+ end
+ D -> P: markRunning(id, server.number)
+ P --> D: RUNNING
+ D --> E: assignment
+ E -> T: recordStart(assignment, t)
+ T --> E: начало учтено
+ E -> C: scheduleCompletion(assignment)
+ C --> E: завершение добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "STARTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+end
+ref over E,D
+Следующий assignNext(t) возвращает null:
+WAITING нет, А и Б ещё RUNNING.
+end ref
+== Поступление Г при активном пакете ==
+E -> C: popNextBatch(): EventBatch
+C --> E: поступление из вуза в момент tГ
+E -> E: modelTime = tГ; t = tГ
+E -> S: generate(t): Request
+S --> E: Г из вуза; далее r = Г
+note over S
+ИБ: бесконечный логический источник.
+ИЗ1: интервалы поступлений ~ Exp(lambda).
+end note
+E -> T: recordArrival(r, t)
+T --> E: поступление учтено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "GENERATED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> I: accept(r): InsertionResult
+I -> B: insert(r): InsertionResult
+B -> B: искать свободную ячейку по кругу от p
+alt свободная ячейка j найдена (Д1ОЗ1)
+ B -> B: slots[j] = r; p = (j + 1) mod capacity
+else буфер заполнен (Д1ОО1)
+ B -> B: evicted = slots[p]; j = p
+ B -> B: slots[j] = r; p = (j + 1) mod capacity
+end
+B --> I: result(r, j, oldPointer, newPointer, evicted?)
+I --> E: result
+opt evicted существует
+ E -> D: onEvicted(evicted.id)
+    opt activePackage != null и evicted.id входит в activePackage
+  D -> P: markRefused(evicted.id)
+  P --> D: REFUSED; состав не изменён
+ end
+ D --> E: уведомление обработано
+end
+E -> T: recordInsertion(result, t)
+T --> E: запись и отказ вытесненной заявки учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "INSERTED_OR_EVICTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> S: nextArrivalAt(t): Time
+S --> E: tNext = t + Exp(lambda)
+E -> C: scheduleArrival(sourceId, tNext)
+C --> E: событие добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "ARRIVAL_SCHEDULED", snapshot)
+T --> E: состояние сохранено (ОД2)
+note over B,P
+Г и школьная В ждут будущих пакетов.
+Состав {А, Б} не изменён; серверы №3–5 не начинают Г или В.
+end note
+E -> D: assignNext(t): Assignment?
+D -> P: isTerminal()
+P --> D: false
+D -> F: lowestFree()
+F --> D: сервер №3
+D -> P: nextWaiting()
+P --> D: null; А и Б RUNNING
+D --> E: null
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "DISPATCH_FINISHED", snapshot)
+T --> E: состояние сохранено (ОД2)
+== Завершение А при ещё обрабатываемой Б ==
+E -> C: popNextBatch(): EventBatch
+C --> E: завершение А в момент tА
+E -> E: modelTime = tА; t = tА
+E -> V1: finish(t): CompletionResult
+V1 --> E: result для А; assignment.server = №1; сервер свободен
+E -> D: onCompleted(result)
+D -> P: markServed(result.assignment.request.id)
+P --> D: RUNNING → SERVED
+D --> E: состояние пакета обновлено
+E -> T: recordCompletion(result, t)
+T --> E: завершение и время пребывания учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "COMPLETED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> D: assignNext(t)
+D -> P: isTerminal()
+P --> D: false; Б RUNNING
+D -> F: lowestFree()
+F --> D: сервер №1
+D -> P: nextWaiting()
+P --> D: null
+D --> E: null; сервер №1 ждёт
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "DISPATCH_FINISHED", snapshot)
+T --> E: состояние сохранено (ОД2)
+== Завершение Б и следующий пакет ==
+E -> C: popNextBatch(): EventBatch
+C --> E: завершение Б в момент tБ
+E -> E: modelTime = tБ; t = tБ
+E -> V2: finish(t): CompletionResult
+V2 --> E: result для Б; assignment.server = №2; сервер свободен
+E -> D: onCompleted(result)
+D -> P: markServed(result.assignment.request.id)
+P --> D: RUNNING → SERVED
+D --> E: состояние пакета обновлено
+E -> T: recordCompletion(result, t)
+T --> E: завершение и время пребывания учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "COMPLETED", snapshot)
+T --> E: состояние сохранено (ОД2)
+E -> D: assignNext(t)
+D -> P: isTerminal()
+P --> D: true; А и Б SERVED
+D -> P: close()
+P --> D: закрыт
+D -> D: activePackage = null
+D -> F: lowestFree()
+F --> D: сервер №1 (Д2П1)
+D -> B: highestPrioritySource()
+B --> D: вуз; Г приоритетнее школьной В
+D -> B: waitingIds(вуз)
+B --> D: [Г.id]
+D -> D: newPackageId = nextPackageId; nextPackageId += 1
+D -> P: <<create>> ProcessingPackage(newPackageId, [Г.id])
+P --> D: новый фиксированный пакет (Д2Б5)
+D -> P: nextWaiting()
+P --> D: Г.id, WAITING
+D -> B: remove(Г.id)
+B --> D: Г; ячейка свободна; p не меняется
+D -> V1: start(Г, newPackageId, t)
+V1 --> D: assignmentГ на сервере №1
+D -> P: markRunning(Г.id, 1)
+P --> D: RUNNING
+D --> E: assignmentГ
+E -> T: recordStart(assignmentГ, t)
+T --> E: начало учтено
+E -> C: scheduleCompletion(assignmentГ)
+C --> E: завершение Г добавлено
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "STARTED", snapshot)
+T --> E: состояние сохранено (ОД2)
+ref over E,D
+Следующий assignNext(t) возвращает null.
+В остаётся в буфере до выбора школьного пакета.
+end ref
+
+@enduml
