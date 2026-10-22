@@ -1,0 +1,144 @@
+@startuml
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 14
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 50
+skinparam ranksep 55
+hide empty members
+title СМО, вариант 5 – данные событий и состояния пакета
+
+class RequestId <<value>> {
+ + sourceId: SourceId {readOnly}
+ + sequenceNo: long {readOnly}
+}
+class InsertionResult <<record>> {
+ + request: Request
+ + slot: int
+ + oldPointer: int
+ + newPointer: int
+ + evicted: Request?
+}
+class Assignment <<record>> {
+ + request: Request
+ + server: ComputingServer
+ + packageId: PackageId
+ + startAt: Time
+ + endAt: Time
+}
+class CompletionResult <<record>> {
+ + assignment: Assignment
+ + completedAt: Time
+}
+abstract class Event {
+ + at: Time
+}
+class ArrivalEvent {
+ + sourceId: SourceId
+}
+class CompletionEvent {
+ + assignment: Assignment
+}
+class EventBatch <<record>> {
+ + t: Time
+ + completions: List<CompletionEvent>
+ + arrivals: List<ArrivalEvent>
+}
+enum MemberState {
+ WAITING
+ RUNNING
+ SERVED
+ REFUSED
+}
+class PackageState <<record>> {
+ + packageId: PackageId
+ + frozenIds: Tuple<RequestId>
+ + members: Map<RequestId, MemberState>
+}
+class BufferState <<record>> {
+ + capacity: int
+ + insertionPointer: int
+ + slots: Array<RequestId?>
+}
+class ServerState <<record>> {
+ + number: int
+ + current: Assignment?
+}
+class SourceState <<record>> {
+ + id: SourceId
+ + priority: int
+ + generatedCount: long
+}
+class SystemSnapshot <<record>> {
+ + t: Time
+ + sources: List<SourceState>
+ + buffer: BufferState
+ + servers: List<ServerState>
+ + activePackage: PackageState?
+ + calendar: List<Event>
+ + remainingCurrentEvents: List<Event>
+ + metrics: Metrics
+}
+class StateFrame <<record>> {
+ + t: Time
+ + action: String
+ + state: SystemSnapshot
+}
+class SourceStatistics <<record>> {
+ + arrived: long
+ + started: long
+ + served: long
+ + refused: long
+ + waitingTotal: Duration
+ + servedSojournTotal: Duration
+}
+class BusyInterval <<record>> {
+ + startAt: Time
+ + endAt: Time?
+}
+class Metrics <<record>> {
+ + bySource: Map<SourceId, SourceStatistics>
+ + refusalFraction: Real?
+ + meanServedSojourn: Duration?
+ + meanStartedWaiting: Duration?
+ + utilization: Map<int, Real?>
+}
+enum RunMode {
+ AUTOMATIC
+ STEP
+}
+interface StopCondition {
+ + isSatisfied(state: SystemSnapshot): bool
+}
+Event <|-- ArrivalEvent
+Event <|-- CompletionEvent
+EventBatch "1" o-- "0..*" CompletionEvent
+EventBatch "1" o-- "0..*" ArrivalEvent
+CompletionEvent --> Assignment
+CompletionResult --> Assignment
+PackageState --> MemberState
+StateFrame --> SystemSnapshot
+SystemSnapshot --> BufferState
+SystemSnapshot --> PackageState
+SystemSnapshot --> ServerState
+SystemSnapshot --> SourceState
+SystemSnapshot --> Metrics
+Metrics --> SourceStatistics
+Assignment ..> RequestId
+
+note bottom of EventBatch
+Для одного t: все завершения по номеру сервера,
+затем поступления по sourceId и sequenceNo,
+затем назначения до отсутствия доступной заявки.
+end note
+note bottom of MemberState
+WAITING → RUNNING → SERVED
+WAITING → REFUSED
+RUNNING-заявка отсутствует в буфере.
+end note
+note bottom of Metrics
+При отсутствии наблюдений показатель не определён.
+Загрузка вычисляется по занятым интервалам
+в пределах наблюдаемого модельного времени.
+end note
+@enduml

@@ -1,0 +1,187 @@
+@startuml
+skinparam defaultFontName Segoe UI
+skinparam defaultFontSize 14
+skinparam classAttributeIconSize 0
+skinparam linetype ortho
+skinparam nodesep 50
+skinparam ranksep 65
+skinparam class {
+ BackgroundColor #F5F8FC
+ BorderColor #25415D
+ ArrowColor #25415D
+}
+hide empty members
+title СМО, вариант 5 – архитектура классов
+
+class SimulationEngine {
+ - modelTime: Time
+ - remainingCurrentEvents: List<Event>
+ - sources: List<Source>
+ - buffer: CircularBuffer
+ - insertion: InsertionDispatcher
+ - selection: SelectionDispatcher
+ - serverPool: ServerPool
+ - calendar: EventCalendar
+ - statistics: StatisticsCollector
+ + run(mode: RunMode, stop: StopCondition): void
+ - processBatch(batch: EventBatch): void
+ - processArrival(sourceId: SourceId, t: Time): void
+ - processCompletion(event: CompletionEvent, t: Time): void
+ - assignAvailable(t: Time): void
+ + snapshot(): SystemSnapshot
+}
+
+class Source {
+ - id: SourceId
+ - priority: int
+ - lambda: Rate
+ - sequenceNo: long
+ + generate(t: Time): Request
+ + nextArrivalAt(t: Time): Time
+ + getState(): SourceState
+}
+
+class Request {
+ + id: RequestId {readOnly}
+ + sourceId: SourceId {readOnly}
+ - sequenceNo: long {readOnly}
+ - arrivedAt: Time {readOnly}
+ + getId(): RequestId
+ + getSourceId(): SourceId
+ + getArrivedAt(): Time
+ + waitingTime(startAt: Time): Duration
+ + sojournTime(endAt: Time): Duration
+}
+
+class InsertionDispatcher {
+ - buffer: CircularBuffer
+ + accept(request: Request): InsertionResult
+}
+
+class CircularBuffer {
+ - capacity: int
+ - slots: Array<Request?>
+ - insertionPointer: int
+ - sourcePriority: Map<SourceId, int>
+ + insert(request: Request): InsertionResult
+ + remove(id: RequestId): Request
+ + highestPrioritySource(): SourceId?
+ + waitingIds(sourceId: SourceId): List<RequestId>
+ + getState(): BufferState
+ - findFreeFromPointer(): int?
+}
+
+class SelectionDispatcher {
+ - buffer: CircularBuffer
+ - serverPool: ServerPool
+ - activePackage: ProcessingPackage?
+ - nextPackageId: long
+ + assignNext(t: Time): Assignment?
+ + onCompleted(result: CompletionResult): void
+ + onEvicted(id: RequestId): void
+ + getActivePackageState(): PackageState?
+ - closeTerminalPackage(): void
+ - formPackage(sourceId: SourceId): ProcessingPackage
+}
+
+class ProcessingPackage {
+ + id: PackageId {readOnly}
+ - frozenIds: Tuple<RequestId> {readOnly}
+ - states: Map<RequestId, MemberState>
+ - assignedServers: Map<RequestId, int>
+ - closed: bool
+ + ProcessingPackage(id: PackageId, frozenIds: List<RequestId>)
+ + contains(id: RequestId): bool
+ + nextWaiting(): RequestId?
+ + markRunning(id: RequestId, serverNumber: int): void
+ + markServed(id: RequestId): void
+ + markRefused(id: RequestId): void
+ + isTerminal(): bool
+ + close(): void
+ + getState(): PackageState
+}
+
+class ServerPool {
+ - servers: List<ComputingServer>
+ + lowestFree(): ComputingServer?
+ + getState(): List<ServerState>
+}
+
+class ComputingServer {
+ + number: int {readOnly}
+ - lowerBound: Duration
+ - upperBound: Duration
+ - current: Assignment?
+ + isFree(): bool
+ + start(request: Request, packageId: PackageId, t: Time): Assignment
+ + finish(t: Time): CompletionResult
+ + getState(): ServerState
+}
+
+class EventCalendar {
+ - events: PriorityQueue<Event>
+ + scheduleArrival(sourceId: SourceId, at: Time): void
+ + scheduleCompletion(assignment: Assignment): void
+ + popNextBatch(): EventBatch
+ + getState(): List<Event>
+}
+
+class StatisticsCollector {
+ - bySource: Map<SourceId, SourceStatistics>
+ - busyIntervals: Map<int, List<BusyInterval>>
+ - journal: List<StateFrame>
+ + recordArrival(request: Request, t: Time): void
+ + recordInsertion(result: InsertionResult, t: Time): void
+ + recordStart(assignment: Assignment, t: Time): void
+ + recordCompletion(result: CompletionResult, t: Time): void
+ + recordState(t: Time, action: String, state: SystemSnapshot): void
+ + summary(): SummaryTable
+ + getMetrics(t: Time): Metrics
+}
+
+SimulationEngine "1" *-- "3" Source
+SimulationEngine "1" *-- "1" InsertionDispatcher
+SimulationEngine "1" *-- "1" SelectionDispatcher
+SimulationEngine "1" *-- "1" CircularBuffer
+SimulationEngine "1" *-- "1" ServerPool
+SimulationEngine "1" *-- "1" EventCalendar
+SimulationEngine "1" *-- "1" StatisticsCollector
+InsertionDispatcher "1" --> "1" CircularBuffer : buffer
+SelectionDispatcher "1" --> "1" CircularBuffer : buffer
+SelectionDispatcher "1" --> "1" ServerPool : serverPool
+SelectionDispatcher "1" *-- "0..1" ProcessingPackage : activePackage
+ServerPool "1" *-- "5" ComputingServer : servers
+CircularBuffer "1" o-- "0..*" Request : ожидающие
+Source ..> Request : создаёт
+ComputingServer "1" --> "0..1" Request : текущая заявка
+ProcessingPackage ..> Request : фиксированные идентификаторы
+EventCalendar ..> ComputingServer : адресат завершения
+StatisticsCollector ..> Request : времена ожидания и пребывания
+
+note bottom of CircularBuffer
+Д1ОЗ1: запись по кольцу от insertionPointer.
+Д1ОО1: при полном буфере замена под указателем.
+remove() освобождает ячейку без сдвига указателя.
+В буфере нет RUNNING, SERVED и REFUSED.
+end note
+note bottom of ProcessingPackage
+nextWaiting() возвращает только WAITING.
+frozenIds не изменяется после создания.
+close() допустим только при isTerminal() == true.
+SERVED и REFUSED – терминальные исходы.
+end note
+note bottom of Source
+ИБ, ИЗ1: nextArrivalAt(t) = t + Exp(lambda).
+Приоритет: вуз, школа, колледж.
+end note
+note bottom of ComputingServer
+ПЗ2: duration ~ Uniform(lowerBound, upperBound).
+start() и finish() принадлежат конкретному серверу.
+ServerPool только находит свободный сервер по Д2П1.
+end note
+note bottom of StatisticsCollector
+Все record-методы вызывает SimulationEngine.
+ОР1: сводная таблица; ОД2: журнал состояний
+со схемой, календарём, буфером и указателем.
+end note
+@enduml
