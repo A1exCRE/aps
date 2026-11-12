@@ -25,8 +25,7 @@ participant "Диспетчер постановки\nInsertionDispatcher" as I
 participant "Кольцевой буфер\nCircularBuffer" as B
 participant "Диспетчер выбора\nSelectionDispatcher" as D
 participant "Текущий пакет\nProcessingPackage" as P
-participant "Пул серверов\nServerPool" as F
-participant "Выбранный сервер\nComputingServer" as V
+participant "Сервер\nComputingServer" as V
 participant "Статистика\nStatisticsCollector" as T
 note over E,T
 Все заявки проходят через буфер. Буфер содержит только ожидающие заявки.
@@ -41,24 +40,11 @@ end
 loop до заданного условия остановки
  E -> C: popNextBatch(): EventBatch
  C --> E: batch(t, completions, arrivals)
- E -> E: modelTime = batch.t
- group Завершения данного t, по номеру сервера
- loop для каждого completion
-E -> V: finish(t): CompletionResult
-V --> E: result(assignment, completedAt=t); сервер свободен
-E -> D: onCompleted(result)
-D -> P: markServed(result.assignment.request.id)
-P --> D: RUNNING → SERVED
-D --> E: состояние пакета обновлено
-E -> T: recordCompletion(result, t)
-T --> E: завершение и время пребывания учтены
-E -> E: snapshot(): SystemSnapshot
-E -> T: recordState(t, "COMPLETED", snapshot)
-T --> E: состояние сохранено (ОД2)
-end
- end
- group Поступления данного t, по номеру источника и sequenceNo
- loop для каждого arrival
+ E -> E: modelTime = batch.t; remainingCurrentEvents = события batch
+ note over E,C: При равном t: завершения по номеру сервера, затем поступления по источнику и sequenceNo
+ loop события batch: сначала completions, затем arrivals
+ E -> E: удалить текущее событие из remainingCurrentEvents
+ alt событие поступления ArrivalEvent
 E -> S: generate(t): Request
 S --> E: r(sourceId, sequenceNo, arrivedAt=t)
 note over S
@@ -72,7 +58,7 @@ E -> T: recordState(t, "GENERATED", snapshot)
 T --> E: состояние сохранено (ОД2)
 E -> I: accept(r): InsertionResult
 I -> B: insert(r): InsertionResult
-B -> B: искать свободную ячейку по кругу от p
+B -> B: oldPointer = p; искать свободную ячейку по кругу от p
 alt свободная ячейка j найдена (Д1ОЗ1)
  B -> B: slots[j] = r; p = (j + 1) mod capacity
 else буфер заполнен (Д1ОО1)
@@ -90,7 +76,7 @@ opt evicted существует
  D --> E: уведомление обработано
 end
 E -> T: recordInsertion(result, t)
-T --> E: запись и отказ вытесненной заявки учтены
+T --> E: вставка и возможный отказ вытесненной заявки учтены
 E -> E: snapshot(): SystemSnapshot
 E -> T: recordState(t, "INSERTED_OR_EVICTED", snapshot)
 T --> E: состояние сохранено (ОД2)
@@ -101,7 +87,20 @@ C --> E: событие добавлено
 E -> E: snapshot(): SystemSnapshot
 E -> T: recordState(t, "ARRIVAL_SCHEDULED", snapshot)
 T --> E: состояние сохранено (ОД2)
-end
+ else событие завершения CompletionEvent
+note over E,V: V = completion.assignment.server: тот же сервер, на котором вызван start()
+E -> V: finish(t): CompletionResult
+V --> E: result(assignment, completedAt=t); сервер свободен
+E -> D: onCompleted(result)
+D -> P: markServed(result.assignment.request.id)
+P --> D: RUNNING → SERVED
+D --> E: состояние пакета обновлено
+E -> T: recordCompletion(result, t)
+T --> E: завершение и время пребывания учтены
+E -> E: snapshot(): SystemSnapshot
+E -> T: recordState(t, "COMPLETED", snapshot)
+T --> E: состояние сохранено (ОД2)
+ end
  end
  group Назначения после всех завершений и поступлений данного t
 E -> E: continueAssignments = true
@@ -116,10 +115,18 @@ opt activePackage существует
   D -> D: activePackage = null
  end
 end
-D -> F: lowestFree(): ComputingServer?
-F --> D: server с минимальным номером / null (Д2П1)
+D -> D: lowestFree(): ComputingServer?
+D -> D: server = null
+loop servers по возрастанию number до первого свободного
+ D -> V: isFree(): bool
+ V --> D: free
+ opt free == true
+  D -> D: server = V; завершить поиск (Д2П1)
+ end
+end
+D -> D: результат поиска: server с минимальным номером / null (Д2П1)
 alt server == null
- D --> E: null
+ D --> E: null; все серверы заняты, заявки ждут в буфере
 else свободный сервер найден
  opt activePackage == null
   D -> B: highestPrioritySource(): SourceId?
@@ -130,6 +137,7 @@ else свободный сервер найден
    D -> D: packageId = nextPackageId; nextPackageId += 1
    D -> P: <<create>> ProcessingPackage(packageId, frozenIds)
    P --> D: фиксированный состав; состояния WAITING (Д2Б5)
+   D -> D: activePackage = созданный пакет
   end
  end
  alt activePackage отсутствует
@@ -149,7 +157,7 @@ else свободный сервер найден
    D -> V: start(r, activePackage.id, t): Assignment
    V --> D: assignment(request, server, packageId, t, endAt)
    note right of V
-   V = server, возвращённый lowestFree().
+   V = server, выбранный диспетчером lowestFree().
    ПЗ2: endAt = t + Uniform(a, b).
    end note
    D -> P: markRunning(id, server.number)
@@ -174,7 +182,12 @@ T --> E: состояние сохранено (ОД2)
 
 end
 end
-note over E,D: переход к следующему календарному времени
+note over E,D
+После назначения свободные серверы обслуживают только активный пакет.
+Новые поступления на следующих итерациях остаются вне frozenIds.
+После завершения последнего RUNNING и отсутствия WAITING пакет закрывается;
+следующий assignNext(t) может сформировать новый пакет.
+end note
 end
 end
 E -> T: summary(): SummaryTable

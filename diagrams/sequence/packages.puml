@@ -25,7 +25,7 @@ participant "Диспетчер постановки\nInsertionDispatcher" as I
 participant "Кольцевой буфер\nCircularBuffer" as B
 participant "Диспетчер выбора\nSelectionDispatcher" as D
 participant "Текущий пакет\nProcessingPackage" as P
-participant "Пул серверов\nServerPool" as F
+participant "Проверяемый сервер\nComputingServer" as Q
 participant "Сервер №1\nComputingServer" as V1
 participant "Сервер №2\nComputingServer" as V2
 participant "Статистика\nStatisticsCollector" as T
@@ -45,8 +45,16 @@ loop последовательно назначить А и Б
   P --> D: прежний пакет закрыт
   D -> D: activePackage = null
  end
- D -> F: lowestFree(): ComputingServer?
- F --> D: сначала №1, затем №2 (Д2П1)
+ D -> D: lowestFree(): ComputingServer?
+ D -> D: server = null
+ loop servers по возрастанию number до первого свободного
+  D -> Q: isFree(): bool
+  Q --> D: free
+  opt free == true
+   D -> D: server = Q; завершить поиск (Д2П1)
+  end
+ end
+ D -> D: результат поиска: сначала №1, затем №2 (Д2П1)
  opt activePackage == null
   D -> B: highestPrioritySource()
   B --> D: вуз
@@ -135,8 +143,16 @@ end note
 E -> D: assignNext(t): Assignment?
 D -> P: isTerminal()
 P --> D: false
-D -> F: lowestFree()
-F --> D: сервер №3
+D -> D: lowestFree(): ComputingServer?
+D -> D: server = null
+loop servers по возрастанию number до первого свободного
+ D -> Q: isFree(): bool
+ Q --> D: free
+ opt free == true
+  D -> D: server = Q; завершить поиск (Д2П1)
+ end
+end
+D -> D: результат поиска: сервер №3
 D -> P: nextWaiting()
 P --> D: null; А и Б RUNNING
 D --> E: null
@@ -161,8 +177,16 @@ T --> E: состояние сохранено (ОД2)
 E -> D: assignNext(t)
 D -> P: isTerminal()
 P --> D: false; Б RUNNING
-D -> F: lowestFree()
-F --> D: сервер №1
+D -> D: lowestFree(): ComputingServer?
+D -> D: server = null
+loop servers по возрастанию number до первого свободного
+ D -> Q: isFree(): bool
+ Q --> D: free
+ opt free == true
+  D -> D: server = Q; завершить поиск (Д2П1)
+ end
+end
+D -> D: результат поиска: сервер №1
 D -> P: nextWaiting()
 P --> D: null
 D --> E: null; сервер №1 ждёт
@@ -190,8 +214,16 @@ P --> D: true; А и Б SERVED
 D -> P: close()
 P --> D: закрыт
 D -> D: activePackage = null
-D -> F: lowestFree()
-F --> D: сервер №1 (Д2П1)
+D -> D: lowestFree(): ComputingServer?
+D -> D: server = null
+loop servers по возрастанию number до первого свободного
+ D -> Q: isFree(): bool
+ Q --> D: free
+ opt free == true
+  D -> D: server = Q; завершить поиск (Д2П1)
+ end
+end
+D -> D: результат поиска: сервер №1 (Д2П1)
 D -> B: highestPrioritySource()
 B --> D: вуз; Г приоритетнее школьной В
 D -> B: waitingIds(вуз)

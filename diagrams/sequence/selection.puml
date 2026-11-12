@@ -23,8 +23,7 @@ participant "Календарь\nEventCalendar" as C
 participant "Кольцевой буфер\nCircularBuffer" as B
 participant "Диспетчер выбора\nSelectionDispatcher" as D
 participant "Текущий пакет\nProcessingPackage" as P
-participant "Пул серверов\nServerPool" as F
-participant "Выбранный сервер\nComputingServer" as V
+participant "Сервер\nComputingServer" as V
 participant "Статистика\nStatisticsCollector" as T
 note over E,T
 Триггер: обработаны все завершения и поступления текущего t.
@@ -43,8 +42,16 @@ opt activePackage существует
   D -> D: activePackage = null
  end
 end
-D -> F: lowestFree(): ComputingServer?
-F --> D: server с минимальным номером / null (Д2П1)
+D -> D: lowestFree(): ComputingServer?
+D -> D: server = null
+loop servers по возрастанию number до первого свободного
+ D -> V: isFree(): bool
+ V --> D: free
+ opt free == true
+  D -> D: server = V; завершить поиск (Д2П1)
+ end
+end
+D -> D: результат поиска: server с минимальным номером / null (Д2П1)
 alt server == null
  D --> E: null
 else свободный сервер найден
@@ -76,7 +83,7 @@ else свободный сервер найден
    D -> V: start(r, activePackage.id, t): Assignment
    V --> D: assignment(request, server, packageId, t, endAt)
    note right of V
-   V = server, возвращённый lowestFree().
+   V = server, выбранный диспетчером lowestFree().
    ПЗ2: endAt = t + Uniform(a, b).
    end note
    D -> P: markRunning(id, server.number)

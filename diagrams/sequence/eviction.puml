@@ -25,8 +25,7 @@ participant "Диспетчер постановки\nInsertionDispatcher" as I
 participant "Кольцевой буфер\nCircularBuffer" as B
 participant "Диспетчер выбора\nSelectionDispatcher" as D
 participant "Текущий пакет\nProcessingPackage" as P
-participant "Пул серверов\nServerPool" as F
-participant "Выбранный сервер\nComputingServer" as V
+participant "Сервер\nComputingServer" as V
 participant "Статистика\nStatisticsCollector" as T
 note over E,T
 Пакет содержит А, Б и других участников; состав фиксирован.
@@ -79,8 +78,16 @@ T --> E: состояние сохранено (ОД2)
 E -> D: assignNext(t)
 D -> P: isTerminal()
 P --> D: false; есть RUNNING
-D -> F: lowestFree()
-F --> D: null
+D -> D: lowestFree(): ComputingServer?
+D -> D: server = null
+loop servers по возрастанию number до первого свободного
+ D -> V: isFree(): bool
+ V --> D: free
+ opt free == true
+  D -> D: server = V; завершить поиск (Д2П1)
+ end
+end
+D -> D: результат поиска: null
 D --> E: null
 E -> E: snapshot(): SystemSnapshot
 E -> T: recordState(t, "DISPATCH_FINISHED", snapshot)

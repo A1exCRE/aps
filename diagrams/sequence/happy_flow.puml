@@ -25,8 +25,7 @@ participant "Диспетчер постановки\nInsertionDispatcher" as I
 participant "Кольцевой буфер\nCircularBuffer" as B
 participant "Диспетчер выбора\nSelectionDispatcher" as D
 participant "Текущий пакет\nProcessingPackage" as P
-participant "Пул серверов\nServerPool" as F
-participant "Выбранный сервер\nComputingServer" as V
+participant "Сервер\nComputingServer" as V
 participant "Статистика\nStatisticsCollector" as T
 E -> C: popNextBatch(): EventBatch
 C --> E: поступление источника в момент t
@@ -57,8 +56,16 @@ E -> E: snapshot(): SystemSnapshot
 E -> T: recordState(t, "ARRIVAL_SCHEDULED", snapshot)
 T --> E: состояние сохранено (ОД2)
 E -> D: assignNext(t): Assignment?
-D -> F: lowestFree(): ComputingServer?
-F --> D: server с минимальным номером (Д2П1)
+D -> D: lowestFree(): ComputingServer?
+D -> D: server = null
+loop servers по возрастанию number до первого свободного
+ D -> V: isFree(): bool
+ V --> D: free
+ opt free == true
+  D -> D: server = V; завершить поиск (Д2П1)
+ end
+end
+D -> D: результат поиска: server с минимальным номером (Д2П1)
 D -> B: highestPrioritySource(): SourceId?
 B --> D: r.sourceId
 D -> B: waitingIds(r.sourceId): List<RequestId>
@@ -85,8 +92,16 @@ T --> E: состояние сохранено (ОД2)
 E -> D: assignNext(t): Assignment?
 D -> P: isTerminal(): bool
 P --> D: false
-D -> F: lowestFree(): ComputingServer?
-F --> D: следующий свободный сервер
+D -> D: lowestFree(): ComputingServer?
+D -> D: server = null
+loop servers по возрастанию number до первого свободного
+ D -> V: isFree(): bool
+ V --> D: free
+ opt free == true
+  D -> D: server = V; завершить поиск (Д2П1)
+ end
+end
+D -> D: результат поиска: следующий свободный сервер
 D -> P: nextWaiting(): RequestId?
 P --> D: null; единственный участник RUNNING
 D --> E: null
@@ -111,8 +126,16 @@ P --> D: true
 D -> P: close()
 P --> D: закрыт
 D -> D: activePackage = null
-D -> F: lowestFree(): ComputingServer?
-F --> D: server с минимальным номером
+D -> D: lowestFree(): ComputingServer?
+D -> D: server = null
+loop servers по возрастанию number до первого свободного
+ D -> V: isFree(): bool
+ V --> D: free
+ opt free == true
+  D -> D: server = V; завершить поиск (Д2П1)
+ end
+end
+D -> D: результат поиска: server с минимальным номером
 D -> B: highestPrioritySource(): SourceId?
 B --> D: null; буфер пуст
 D --> E: null
