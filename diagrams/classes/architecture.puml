@@ -20,7 +20,7 @@ class SimulationEngine {
  - buffer: CircularBuffer
  - insertion: InsertionDispatcher
  - selection: SelectionDispatcher
- - serverPool: ServerPool
+ - servers: List<ComputingServer>
  - calendar: EventCalendar
  - statistics: StatisticsCollector
  + run(mode: RunMode, stop: StopCondition): void
@@ -73,13 +73,14 @@ class CircularBuffer {
 
 class SelectionDispatcher {
  - buffer: CircularBuffer
- - serverPool: ServerPool
+ - servers: List<ComputingServer>
  - activePackage: ProcessingPackage?
  - nextPackageId: long
  + assignNext(t: Time): Assignment?
  + onCompleted(result: CompletionResult): void
  + onEvicted(id: RequestId): void
  + getActivePackageState(): PackageState?
+ - lowestFree(): ComputingServer?
  - closeTerminalPackage(): void
  - formPackage(sourceId: SourceId): ProcessingPackage
 }
@@ -99,12 +100,6 @@ class ProcessingPackage {
  + isTerminal(): bool
  + close(): void
  + getState(): PackageState
-}
-
-class ServerPool {
- - servers: List<ComputingServer>
- + lowestFree(): ComputingServer?
- + getState(): List<ServerState>
 }
 
 class ComputingServer {
@@ -143,14 +138,13 @@ SimulationEngine "1" *-- "3" Source
 SimulationEngine "1" *-- "1" InsertionDispatcher
 SimulationEngine "1" *-- "1" SelectionDispatcher
 SimulationEngine "1" *-- "1" CircularBuffer
-SimulationEngine "1" *-- "1" ServerPool
+SimulationEngine "1" *-- "5" ComputingServer : servers
 SimulationEngine "1" *-- "1" EventCalendar
 SimulationEngine "1" *-- "1" StatisticsCollector
 InsertionDispatcher "1" --> "1" CircularBuffer : buffer
 SelectionDispatcher "1" --> "1" CircularBuffer : buffer
-SelectionDispatcher "1" --> "1" ServerPool : serverPool
+SelectionDispatcher "1" --> "5" ComputingServer : servers
 SelectionDispatcher "1" *-- "0..1" ProcessingPackage : activePackage
-ServerPool "1" *-- "5" ComputingServer : servers
 CircularBuffer "1" o-- "0..*" Request : ожидающие
 Source ..> Request : создаёт
 ComputingServer "1" --> "0..1" Request : текущая заявка
@@ -177,7 +171,7 @@ end note
 note bottom of ComputingServer
 ПЗ2: duration ~ Uniform(lowerBound, upperBound).
 start() и finish() принадлежат конкретному серверу.
-ServerPool только находит свободный сервер по Д2П1.
+SelectionDispatcher проверяет isFree() по возрастанию number (Д2П1).
 end note
 note bottom of StatisticsCollector
 Все record-методы вызывает SimulationEngine.
